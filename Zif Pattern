@@ -1,0 +1,223 @@
+#include <std/sys.pat>
+#include <std/file.pat>
+
+struct bareIndex {
+    $ += 8;
+    u32 ForestPtr;
+    $ += 4;
+};
+
+struct bareHeader {
+    u32 fileSize;
+    $ += 24;
+    u32 FirstNamePtr;
+    $ -= 12;
+    u32 FileCount;
+    bareIndex index[FileCount];
+};
+
+bareHeader infoHeader @ 0x0[[hidden]];
+
+fn getAssetSize() {
+    for (u32 i = 1, i < infoHeader.FileCount, i = i + 1) {
+        if ($ == infoHeader.index[i - 1].ForestPtr) {
+            return infoHeader.index[i].ForestPtr - infoHeader.index[i - 1].ForestPtr;
+        }
+    }
+    if (infoHeader.FileCount) {
+        return infoHeader.FirstNamePtr - infoHeader.index[infoHeader.FileCount - 1].ForestPtr;
+    } else {
+        return 0;
+    }
+};
+
+fn getStrLen() {
+    u8 i = 0;
+    for (u32 pos = $, $ < pos + 64, $ += 1) {
+        i += 1;
+        u8 atpos @ $;
+        if (atpos == 00) {
+            return i;
+        }
+    }
+    return 32;
+};
+
+struct ZigData {
+    $ -= 22;
+    u32 facesCount;
+    u32 facesOffset;
+    $ += 32;
+    u32 rawP[[hidden]];
+    u32 vertsCount;
+    u32 vertsOffset;
+    u32 vertsPadding = rawP -12[[export]];
+    u32 normsOffset = vertsOffset +12[[export]];
+    u32 normsPadding = rawP -6[[export]];
+    u32 uvOffset = vertsOffset +24[[export]];
+    u32 uvPadding = rawP -4[[export]];
+};
+
+fn isZigData() {
+    $ += 0x80; // 5 rows
+    for (u8 i = 0, i < 20, i += 1) {
+        $ += 2;
+        u48 test @ $;
+        if (test == 281474976645120) {
+            return $;
+        }
+        $ += 14;
+    }
+    return 0;
+};
+
+fn printn(auto num) {
+    std::print("{}", num);
+};
+
+fn print2(auto str1, auto str2) {
+    std::print(str1);
+    std::print(str2);
+};
+
+struct DBEntry<auto Offset> {
+    u32 start = $;                      // to go back later
+
+    u32 DBEOffsetPtr;
+   
+    $ = DBEOffsetPtr + 12 + Offset;
+    u32 DBENamePtr;
+
+        $ =  DBENamePtr + Offset; 
+        u8   DBENameLen = getStrLen();  // returns when null terminator is found or 32 is reached
+
+        char DBEName[DBENameLen];       // string with calculated size
+
+
+    $ = DBEOffsetPtr + 20 + Offset;
+    u32 DBETestDataPtr[[hidden]];
+    
+    
+    if (DBETestDataPtr % 16 == 0) {
+        $ = DBETestDataPtr + Offset;
+        
+        u32 TestOffset = isZigData();
+        
+        if (TestOffset != 0) {
+            $ = DBEOffsetPtr + 20 + Offset;
+            u32 DBEDataPtr;
+            u32 ZigDataPos = TestOffset[[export]];
+            
+            $ = ZigDataPos + Offset;
+            ZigData DBEData;
+            print2("Succeeded:", DBEName);
+        } else {
+            print2("Failed:", DBEName);
+        }
+        
+    }
+
+
+    $ = start + 4;                      // later is now, +8 is after NameOffsetPTR and DataOffsetPtr
+};
+                    
+struct DataBranch<auto Offset> {
+    
+    u32 DBSize;
+    u32 DBEntryPtr;
+    $ = DBEntryPtr + Offset;
+    DBEntry<Offset> DBEntries[DBSize];
+    
+};
+
+struct TBEntry<auto Offset> {
+    u32 start = $;                      // to go back later
+
+    u32 TBENameOffsetPtr;
+
+    $ = TBENameOffsetPtr + Offset;
+    u32 TBENamePtr;
+    $ += 4;
+    u32 TBEZigOffset;
+
+        $ =  TBENamePtr + Offset;
+        u8   TBENameLen = getStrLen();
+
+        char TBEName[TBENameLen];
+
+    $ = start + 4;
+};
+
+struct TexBranch<auto size, auto Offset> {
+    
+    u32 TBSize = size;
+    TBEntry<Offset> TBEntries[TBSize];
+};
+
+struct ForestHeader<auto Offset> {
+    u32 NCount;
+    $ += 4;
+    u32 TBSize;                         // amount of textures
+    $ += 8;
+    u32;                                // points to after textures
+    $ += 12;
+    u32 DBPtr;
+
+    $ = 40 + NCount * 4 -4 + Offset;    // 40 = DB + 4, NCount nullptrs -1
+    
+};
+
+struct ForestFile {
+    // Size stuff can't be used outside of .zif
+    u32 FileSize = getAssetSize();
+    $ = $ + 20; // 16 bytes null, 4 bytes size
+    u32 FileEOff = $ + FileSize;
+
+    u32 Offset = $;
+
+    ForestHeader<Offset> Header;
+
+    TexBranch<Header.TBSize, Offset> TB;
+
+    $ = Header.DBPtr + 8 + Offset;
+    DataBranch<Offset> DB;
+
+    $ = FileEOff - 4;
+    u32 FileEnd;
+
+};
+
+struct ForestIndex {
+    $ += 4;
+    u32 FileNamePtr;
+    
+        u32 start = $;
+        $ = FileNamePtr + 16 + 4;
+        u32 NameLen = getStrLen();
+        char FileName[NameLen];
+        $ = start;
+    
+    
+    u32 ForestPtr;
+    
+        start = $;
+        $ = ForestPtr;
+        ForestFile File;
+        $ = start;
+        
+    u32 ForestZigOffset;
+    
+        $ = start + 4;
+};
+
+struct ZifHeader {    
+    $ += 16;
+    u32 FileCount;
+};
+
+struct ZifFile {
+    ZifHeader Header;
+    ForestIndex ForestIndexes[Header.FileCount];
+};
+
+ZifFile ZifFileView @ 0x04;
